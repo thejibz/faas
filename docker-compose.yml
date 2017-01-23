@@ -19,7 +19,7 @@ services:
         depends_on:
             - gateway
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
         networks:
             - functions
 
@@ -31,7 +31,7 @@ services:
         networks:
             - functions
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     hubstats:
@@ -41,7 +41,7 @@ services:
         networks:
             - functions
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     nodeinfo:
@@ -51,7 +51,7 @@ services:
         networks:
             - functions
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     echoit:
@@ -61,8 +61,8 @@ services:
         networks:
             - functions
         environment:
-            fprocess:	"cat"
-            no_proxy:   "gateway"
+            fprocess: "cat"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     wordcount:
@@ -72,9 +72,19 @@ services:
         networks:
             - functions
         environment:
-            fprocess:	"wc"
-            no_proxy:   "gateway"
+            fprocess: "wc"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
+
+    courses_from_date:
+        image: yneg_courses_from_date
+        depends_on:
+            - gateway
+        networks:
+            - functions
+        environment:
+            no_proxy: "gateway"
+            https_proxy: $https_proxy   
 networks:
     functions:
         driver: overlay
