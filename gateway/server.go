@@ -1,195 +1,152 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
-	"io/ioutil"
-
-	"encoding/json"
-
 	"github.com/alexellis/faas/gateway/metrics"
+	"github.com/alexellis/faas/gateway/requests"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/gorilla/mux"
-	"github.com/prometheus/client_golang/prometheus"
+	io_prometheus_client "github.com/prometheus/client_model/go"
 )
 
-type AlexaSessionApplication struct {
-	ApplicationId string `json:"applicationId"`
-}
-
-type AlexaSession struct {
-	SessionId   string                  `json:"sessionId"`
-	Application AlexaSessionApplication `json:"application"`
-}
-
-type AlexaIntent struct {
-	Name string `json:"name"`
-}
-
-type AlexaRequest struct {
-	Intent AlexaIntent `json:"intent"`
-}
-
-type AlexaRequestBody struct {
-	Session AlexaSession `json:"session"`
-	Request AlexaRequest `json:"request"`
-}
-
-func lookupSwarmService(serviceName string) (bool, error) {
-	var c *client.Client
+func scaleService(req requests.PrometheusAlert, c *client.Client) error {
 	var err error
-	c, err = client.NewEnvClient()
-	if err != nil {
-		log.Fatal("Error with Docker client.")
-	}
-	fmt.Printf("Resolving: '%s'\n", serviceName)
-	serviceFilter := filters.NewArgs()
-	serviceFilter.Add("name", serviceName)
-	services, err := c.ServiceList(context.Background(), types.ServiceListOptions{Filters: serviceFilter})
+	//Todo: convert to loop / handler.
+	serviceName := req.Alerts[0].Labels.FunctionName
+	service, _, inspectErr := c.ServiceInspectWithRaw(context.Background(), serviceName)
+	if inspectErr != nil {
+		var replicas uint64
 
-	return len(services) > 0, err
-}
-
-func isAlexa(requestBody []byte) AlexaRequestBody {
-	body := AlexaRequestBody{}
-	buf := bytes.NewBuffer(requestBody)
-	fmt.Println(buf)
-	str := buf.String()
-	parts := strings.Split(str, "sessionId")
-	if len(parts) > 1 {
-		json.Unmarshal(requestBody, &body)
-	}
-	return body
-}
-
-func invokeService(w http.ResponseWriter, r *http.Request, metrics metrics.MetricOptions, service string, requestBody []byte) {
-	stamp := strconv.FormatInt(time.Now().Unix(), 10)
-
-	start := time.Now()
-	buf := bytes.NewBuffer(requestBody)
-	url := "http://" + service + ":" + strconv.Itoa(8080) + "/"
-	fmt.Printf("[%s] Forwarding request to: %s\n", stamp, url)
-	response, err := http.Post(url, "text/plain", buf)
-	if err != nil {
-		log.Println(err)
-		w.WriteHeader(500)
-		buf := bytes.NewBufferString("Can't reach service: " + service)
-		w.Write(buf.Bytes())
-		return
-	}
-
-	responseBody, readErr := ioutil.ReadAll(response.Body)
-	if readErr != nil {
-		fmt.Println(readErr)
-		w.WriteHeader(500)
-		buf := bytes.NewBufferString("Error reading response from service: " + service)
-		w.Write(buf.Bytes())
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-	w.Write(responseBody)
-	seconds := time.Since(start).Seconds()
-	fmt.Printf("[%s] took %f seconds\n", stamp, seconds)
-	metrics.GatewayServerlessServedTotal.Inc()
-	metrics.GatewayFunctions.Observe(seconds)
-}
-
-func lookupInvoke(w http.ResponseWriter, r *http.Request, metrics metrics.MetricOptions, name string) {
-	exists, err := lookupSwarmService(name)
-	if err != nil || exists == false {
-		if err != nil {
-			log.Fatalln(err)
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Error resolving service."))
-	}
-	if exists == true {
-		requestBody, _ := ioutil.ReadAll(r.Body)
-		invokeService(w, r, metrics, name, requestBody)
-	}
-}
-
-func makeProxy(metrics metrics.MetricOptions, wildcard bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		metrics.GatewayRequestsTotal.Inc()
-
-		if r.Method == "POST" {
-			log.Println(r.Header)
-			header := r.Header["X-Function"]
-			log.Println(header)
-			fmt.Println(wildcard)
-
-			if wildcard == true {
-				vars := mux.Vars(r)
-				name := vars["name"]
-				fmt.Println("invoke by name")
-				lookupInvoke(w, r, metrics, name)
-			} else if len(header) > 0 {
-				lookupInvoke(w, r, metrics, header[0])
+		if req.Status == "firing" {
+			if *service.Spec.Mode.Replicated.Replicas < 20 {
+				replicas = *service.Spec.Mode.Replicated.Replicas + uint64(5)
 			} else {
-				requestBody, _ := ioutil.ReadAll(r.Body)
-				alexaService := isAlexa(requestBody)
-				fmt.Println(alexaService)
+				return err
+			}
+		} else {
+			replicas = *service.Spec.Mode.Replicated.Replicas - uint64(5)
+			if replicas <= 0 {
+				replicas = 1
+			}
+		}
+		log.Printf("Scaling %s to %d replicas.\n", serviceName, replicas)
 
-				if len(alexaService.Session.SessionId) > 0 &&
-					len(alexaService.Session.Application.ApplicationId) > 0 &&
-					len(alexaService.Request.Intent.Name) > 0 {
+		service.Spec.Mode.Replicated.Replicas = &replicas
+		updateOpts := types.ServiceUpdateOptions{}
+		updateOpts.RegistryAuthFrom = types.RegistryAuthFromSpec
 
-					fmt.Println("Alexa SDK request found")
-					fmt.Printf("SessionId=%s, Intent=%s, AppId=%s\n", alexaService.Session.SessionId, alexaService.Request.Intent.Name, alexaService.Session.Application.ApplicationId)
+		response, updateErr := c.ServiceUpdate(context.Background(), service.ID, service.Version, service.Spec, updateOpts)
+		if updateErr != nil {
+			err = updateErr
+		}
+		log.Println(response)
 
-					invokeService(w, r, metrics, alexaService.Request.Intent.Name, requestBody)
-				} else {
-					w.WriteHeader(http.StatusBadRequest)
-					w.Write([]byte("Provide an x-function header or a valid Alexa SDK request."))
-				}
+	} else {
+		err = inspectErr
+	}
+
+	return err
+}
+
+func makeAlertHandler(c *client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Println("Alert received.")
+		body, _ := ioutil.ReadAll(r.Body)
+
+		var req requests.PrometheusAlert
+		err := json.Unmarshal(body, &req)
+		if err != nil {
+			log.Println(err)
+		}
+
+		if len(req.Alerts) > 0 {
+			err := scaleService(req, c)
+			if err != nil {
+				log.Println(err)
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
 			}
 		}
 	}
 }
 
-func main() {
-	GatewayRequestsTotal := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "gateway_requests_total",
-		Help: "Total amount of HTTP requests to the gateway",
-	})
-	GatewayServerlessServedTotal := prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "gateway_serverless_invocation_total",
-		Help: "Total amount of serverless function invocations",
-	})
-	GatewayFunctions := prometheus.NewHistogram(prometheus.HistogramOpts{
-		Name: "gateway_functions",
-		Help: "Gateway functions",
-	})
+// makeFunctionReader gives a summary of Function structs with Docker service stats overlaid with Prometheus counters.
+func makeFunctionReader(metricsOptions metrics.MetricOptions, c *client.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 
-	prometheus.Register(GatewayRequestsTotal)
-	prometheus.Register(GatewayServerlessServedTotal)
-	prometheus.Register(GatewayFunctions)
+		serviceFilter := filters.NewArgs()
 
-	metricsOptions := metrics.MetricOptions{
-		GatewayRequestsTotal:         GatewayRequestsTotal,
-		GatewayServerlessServedTotal: GatewayServerlessServedTotal,
-		GatewayFunctions:             GatewayFunctions,
+		options := types.ServiceListOptions{
+			Filters: serviceFilter,
+		}
+
+		services, err := c.ServiceList(context.Background(), options)
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		// TODO: Filter only "faas" functions (via metadata?)
+		functions := make([]requests.Function, 0)
+		for _, service := range services {
+			counter, _ := metricsOptions.GatewayFunctionInvocation.GetMetricWithLabelValues(service.Spec.Name)
+
+			// Get the metric's value from ProtoBuf interface (idea via Julius Volz)
+			var protoMetric io_prometheus_client.Metric
+			counter.Write(&protoMetric)
+			invocations := protoMetric.GetCounter().GetValue()
+
+			f := requests.Function{
+				Name:            service.Spec.Name,
+				Image:           service.Spec.TaskTemplate.ContainerSpec.Image,
+				InvocationCount: invocations,
+				Replicas:        *service.Spec.Mode.Replicated.Replicas,
+			}
+			functions = append(functions, f)
+		}
+
+		functionBytes, _ := json.Marshal(functions)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(functionBytes)
 	}
+}
+
+func main() {
+	var dockerClient *client.Client
+	var err error
+	dockerClient, err = client.NewEnvClient()
+	if err != nil {
+		log.Fatal("Error with Docker client.")
+	}
+	dockerVersion, err := dockerClient.ServerVersion(context.Background())
+	if err != nil {
+		log.Fatal("Error with Docker server.\n", err)
+	}
+	log.Println("API version: %s, %s\n", dockerVersion.APIVersion, dockerVersion.Version)
+
+	metricsOptions := metrics.BuildMetricsOptions()
+	metrics.RegisterMetrics(metricsOptions)
 
 	r := mux.NewRouter()
-	r.HandleFunc("/", makeProxy(metricsOptions, false))
-
-	r.HandleFunc("/function/{name:[a-zA-Z_]+}", makeProxy(metricsOptions, true))
+	r.HandleFunc("/function/{name:[a-zA-Z_]+}", MakeProxy(metricsOptions, true, dockerClient))
+	r.HandleFunc("/system/alert", makeAlertHandler(dockerClient))
+	r.HandleFunc("/system/functions", makeFunctionReader(metricsOptions, dockerClient)).Methods("GET")
+	r.HandleFunc("/", MakeProxy(metricsOptions, false, dockerClient)).Methods("POST")
 
 	metricsHandler := metrics.PrometheusHandler()
 	r.Handle("/metrics", metricsHandler)
 
+	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./assets/"))).Methods("GET")
 	s := &http.Server{
 		Addr:           ":8080",
 		ReadTimeout:    8 * time.Second,
