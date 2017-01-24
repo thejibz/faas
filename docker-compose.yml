@@ -5,7 +5,7 @@ services:
             - "/var/run/docker.sock:/var/run/docker.sock"
         ports:
             - 8080:8080
-        image: alexellis2/faas-gateway:latest-dev3
+        image: alexellis2/faas-gateway:latest
         networks:
             - functions
         deploy:
@@ -64,11 +64,14 @@ services:
             https_proxy: $https_proxy
 
     nodeinfo:
-        image: alexellis2/faas-nodeinfo:latest
+        image: jibz/faas-nodefunction:latest
         depends_on:
             - gateway
         networks:
             - functions
+        volumes:
+            - ./sample-functions/NodeInfo/main.js:/main.js
+            - ./sample-functions/NodeInfo/package.json:/package.json
         environment:
             no_proxy:   "gateway"
             https_proxy: $https_proxy
@@ -80,7 +83,7 @@ services:
         networks:
             - functions
         environment:
-            fprocess:	"cat"
+            fprocess: "cat"
             no_proxy:   "gateway"
             https_proxy: $https_proxy
 
@@ -91,7 +94,7 @@ services:
         networks:
             - functions
         environment:
-            fprocess:	"wc"
+            fprocess: "wc"
             no_proxy:   "gateway"
             https_proxy: $https_proxy
 
@@ -100,3 +103,4 @@ networks:
         driver: overlay
         # Docker does not support this option yet - maybe create outside of the stack and reference as "external"?
         #attachable: true
+    
