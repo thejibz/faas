@@ -21,33 +21,66 @@ func main() {
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
-
+			// get the fprocess to execute and it's args
 			process := os.Getenv("fprocess")
+			//
 
+			// split the fprocess and it's args
 			parts := strings.Split(process, " ")
+			//
 
-			targetCmd := exec.Command(parts[0], parts[1:]...)
-			writer, _ := targetCmd.StdinPipe()
+			// prepare the Command object for the fprocess
+			fprocessCmd := exec.Command(parts[0], parts[1:]...)
+			//
 
+			// get a reference on all outputs for the fprocess (as bytes.Buffer)
+			var stdout bytes.Buffer
+			fprocessCmd.Stdout = &stdout
+
+			var stderr bytes.Buffer
+			fprocessCmd.Stderr = &stderr
+			//
+
+			// write the http.Request's POST body to the stdin of the fprocess
+			stdin, _ := fprocessCmd.StdinPipe()
 			res, _ := ioutil.ReadAll(r.Body)
+			stdin.Write(res)
+			stdin.Close()
+			//
+			
+			// execute the fprocess
+			err := fprocessCmd.Run()
+			//
 
-			writer.Write(res)
-			writer.Close()
-
-			out, err := targetCmd.Output()
-			targetCmd.CombinedOutput()
 			if err != nil {
-				log.Println(targetCmd, err)
+				// get the fprocess's stderr content
+				errorStack := stderr.String()
+				//
+
+				// print the error's details to the logger
+				log.Println(err.Error())
+				log.Println(errorStack)
+				//
+
+				// send the http response with the error that occured
 				w.WriteHeader(500)
-				response := bytes.NewBufferString(err.Error())
+				response := bytes.NewBufferString(err.Error() + "\n" + errorStack)
 				w.Write(response.Bytes())
+				//
+
 				return
 			}
 			w.WriteHeader(200)
 
 			// TODO: consider stdout to container as configurable via env-variable.
-			os.Stdout.Write(out)
-			w.Write(out)
+			// write the fprocess's stdout to the fwatchdog stdout
+			os.Stdout.Write(stdout.Bytes())
+			//
+
+			// send the http response with the fprocess's stdout
+			w.WriteHeader(200)
+			w.Write(stdout.Bytes())
+			//
 		}
 	})
 
