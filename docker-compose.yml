@@ -25,7 +25,7 @@ services:
             - gateway
             - alertmanager
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
         networks:
             - functions
 
@@ -50,7 +50,7 @@ services:
         networks:
             - functions
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     hubstats:
@@ -60,7 +60,7 @@ services:
         networks:
             - functions
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     nodeinfo:
@@ -73,7 +73,7 @@ services:
             - ./sample-functions/NodeInfo/main.js:/main.js
             - ./sample-functions/NodeInfo/package.json:/package.json
         environment:
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     echoit:
@@ -84,7 +84,7 @@ services:
             - functions
         environment:
             fprocess: "cat"
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
     wordcount:
@@ -95,7 +95,7 @@ services:
             - functions
         environment:
             fprocess: "wc"
-            no_proxy:   "gateway"
+            no_proxy: "gateway"
             https_proxy: $https_proxy
 
 networks:
