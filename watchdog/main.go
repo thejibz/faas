@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -54,35 +54,34 @@ func main() {
 
 			if err != nil {
 				// get the fprocess's stderr content
-				errorStack := stderr.String()
+				errString := stderr.String()
 				//
 
 				// print the error's details to the logger
-				log.Println(err.Error())
-				log.Println(errorStack)
+				os.Stderr.WriteString(err.Error())
+				os.Stderr.WriteString(errString)
 				//
 
 				// send the http response with the error that occured
 				w.WriteHeader(500)
-				response := bytes.NewBufferString(err.Error() + "\n" + errorStack)
-				w.Write(response.Bytes())
+				io.WriteString(w, err.Error() + "\n" + errString)
 				//
 
 				return
 			}
-			w.WriteHeader(200)
 
-			// TODO: consider stdout to container as configurable via env-variable.
+			// Everything went ok... 
+
 			// write the fprocess's stdout to the fwatchdog stdout
 			os.Stdout.Write(stdout.Bytes())
 			//
 
 			// send the http response with the fprocess's stdout
-			w.WriteHeader(200)
+			w.WriteHeader(http.StatusOK)
 			w.Write(stdout.Bytes())
 			//
 		}
 	})
 
-	log.Fatal(s.ListenAndServe())
+	os.Stdout.WriteString(s.ListenAndServe().Error())
 }
